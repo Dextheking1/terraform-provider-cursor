@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 
@@ -92,6 +93,10 @@ func (p *cursorProvider) Configure(ctx context.Context, req provider.ConfigureRe
 		endpoint = defaultEndpoint
 	}
 	endpoint = strings.TrimRight(endpoint, "/")
+	if err := validateEndpoint(endpoint); err != nil {
+		resp.Diagnostics.AddError("Invalid Cursor endpoint", err.Error())
+		return
+	}
 
 	client, err := newAPIClient(ctx, endpoint, token, p.version, adminKeys{
 		team:         getStringValue(config.TeamAPIKey, envTeamAPIKey),
@@ -104,6 +109,33 @@ func (p *cursorProvider) Configure(ctx context.Context, req provider.ConfigureRe
 
 	resp.DataSourceData = client
 	resp.ResourceData = client
+}
+
+
+// validateEndpoint guards where the user's API key gets sent. The
+// provider posts the raw key to {endpoint}/auth/exchange_user_api_key
+// during Configure, so a poisoned endpoint value (a shared module, a
+// stray CURSOR_ENDPOINT in CI) would hand the key to whoever controls
+// that host, in cleartext on plain http. Only allow https, plus http
+// on loopback for local development and tests.
+func validateEndpoint(endpoint string) error {
+	u, err := url.Parse(endpoint)
+	if err != nil || u.Host == "" {
+		return fmt.Errorf("endpoint %q is not a valid URL", endpoint)
+	}
+	if u.Scheme == "https" {
+		return nil
+	}
+	if u.Scheme == "http" {
+		switch u.Hostname() {
+		case "localhost", "127.0.0.1", "::1":
+			return nil
+		}
+	}
+	return fmt.Errorf(
+		"endpoint %q must use https (http is only allowed for loopback hosts)",
+		endpoint,
+	)
 }
 
 func (p *cursorProvider) Resources(_ context.Context) []func() resource.Resource {
